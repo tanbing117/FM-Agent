@@ -901,7 +901,7 @@ def _prepare_workflow_file(proj_dir, work_dir, script_dir, workflow_filename):
 
 def _run_generate_phases(proj_dir, work_dir, script_dir, is_incremental=False,
                          resume=False, submodules=None, plugin_stage=None,
-                         plugin_root=None):
+                         plugin_root=None, plugin_config=None):
     """Stage 1: generate phase.json — input target code, output phases.json."""
     phases_json = os.path.join(work_dir, "phases.json")
     run_llm = True
@@ -911,9 +911,17 @@ def _run_generate_phases(proj_dir, work_dir, script_dir, is_incremental=False,
             print("[Pipeline] Stage 1/6: Plugin stage 'generate_phase_plan' type=pass, skipping.")
             run_llm = False
         elif plugin_stage.type == "replace":
-            print("[Pipeline] Stage 1/6: Plugin stage 'generate_phase_plan' type=replace, running plugin command.")
-            from .plugin import run_plugin_command
-            run_plugin_command(plugin_stage.replace_cmd, plugin_root, proj_dir, label="generate_phase_plan")
+            print("[Pipeline] Stage 1/6: Plugin stage 'generate_phase_plan' type=replace, calling plugin.replacer().")
+            knowledge_paths = list_staged_domain_knowledge_relpaths(work_dir)
+            input_files = [os.path.join(work_dir, "workflow_generate_phases.md")]
+            if knowledge_paths:
+                input_files += [os.path.join(work_dir, p) for p in knowledge_paths]
+            context = {"project_dir": proj_dir, "work_dir": work_dir}
+            _outputs = plugin_config.invoke_replace(
+                "generate_phase_plan",
+                input_files=input_files,
+                context=context,
+            )
             run_llm = False
 
     if run_llm:
@@ -1069,10 +1077,13 @@ def _run_generate_phases(proj_dir, work_dir, script_dir, is_incremental=False,
                     f"Check {os.path.basename(proj_dir)}/fm_agent/trace/ for details."
                 )
 
-        if plugin_stage is not None and plugin_stage.type == "modify" and plugin_stage.output_process:
+        if plugin_stage is not None and plugin_stage.type == "modify":
             print("[Pipeline] Stage 1/6: Running plugin post-process for generate_phase_plan...")
-            from .plugin import run_plugin_command
-            run_plugin_command(plugin_stage.output_process, plugin_root, proj_dir, label="generate_phase_plan post-process")
+            output_files = [os.path.join(work_dir, "phases.json")]
+            plugin_config.invoke_modify_output(
+                "generate_phase_plan",
+                output_files=output_files,
+            )
 
     if not _phase_plan_complete(work_dir):
         raise RuntimeError(
@@ -1131,7 +1142,8 @@ def _post_process_phases(proj_dir, work_dir, required_source_files=None,
 
 
 def _run_generate_domain_context(proj_dir, work_dir, script_dir, resume=False,
-                                 plugin_stage=None, plugin_root=None):
+                                 plugin_stage=None, plugin_root=None,
+                                 plugin_config=None):
     """Stage 2: generate domain context — input phases.json, output domain context
     files for each phase.
     """
@@ -1142,9 +1154,20 @@ def _run_generate_domain_context(proj_dir, work_dir, script_dir, resume=False,
             print("[Pipeline] Stage 2/6: Plugin stage 'generate_domain_context' type=pass, skipping.")
             run_llm = False
         elif plugin_stage.type == "replace":
-            print("[Pipeline] Stage 2/6: Plugin stage 'generate_domain_context' type=replace, running plugin command.")
-            from .plugin import run_plugin_command
-            run_plugin_command(plugin_stage.replace_cmd, plugin_root, proj_dir, label="generate_domain_context")
+            print("[Pipeline] Stage 2/6: Plugin stage 'generate_domain_context' type=replace, calling plugin.replacer().")
+            knowledge_paths = list_staged_domain_knowledge_relpaths(work_dir)
+            input_files = [
+                os.path.join(work_dir, "workflow_generate_domain_context.md"),
+                os.path.join(work_dir, "phases.json"),
+            ]
+            if knowledge_paths:
+                input_files += [os.path.join(work_dir, p) for p in knowledge_paths]
+            context = {"project_dir": proj_dir, "work_dir": work_dir}
+            _outputs = plugin_config.invoke_replace(
+                "generate_domain_context",
+                input_files=input_files,
+                context=context,
+            )
             run_llm = False
 
     if run_llm:
@@ -1237,10 +1260,22 @@ def _run_generate_domain_context(proj_dir, work_dir, script_dir, resume=False,
                     f"Check {os.path.basename(proj_dir)}/fm_agent/trace/ for details."
                 )
 
-        if plugin_stage is not None and plugin_stage.type == "modify" and plugin_stage.output_process:
+        if plugin_stage is not None and plugin_stage.type == "modify":
             print("[Pipeline] Stage 2/6: Running plugin post-process for generate_domain_context...")
-            from .plugin import run_plugin_command
-            run_plugin_command(plugin_stage.output_process, plugin_root, proj_dir, label="generate_domain_context post-process")
+            from .file_utils import load_phases
+            phases_data = load_phases(work_dir)
+            domain_dir = os.path.join(work_dir, "spec_prompts", "domain_context")
+            output_files = [os.path.join(domain_dir, "engine_overview.txt")]
+            for phase in phases_data.get("phases", []):
+                phase_num = phase.get("phase")
+                if phase_num is not None:
+                    output_files.append(
+                        os.path.join(domain_dir, f"phase_{phase_num:02d}_types.txt")
+                    )
+            plugin_config.invoke_modify_output(
+                "generate_domain_context",
+                output_files=output_files,
+            )
 
     if not _domain_context_complete(work_dir):
         raise RuntimeError(
@@ -1263,10 +1298,12 @@ def _run_setup_extract(proj_dir, work_dir, script_dir, is_incremental=False,
     plugin_root = plugin_config.root if plugin_config else None
 
     _run_generate_phases(proj_dir, work_dir, script_dir, is_incremental, resume, submodules,
-                         plugin_stage=phase_stage, plugin_root=plugin_root)
+                         plugin_stage=phase_stage, plugin_root=plugin_root,
+                         plugin_config=plugin_config)
     phases_modified = _post_process_phases(proj_dir, work_dir, required_source_files, submodules, one_phase=one_phase)
     _run_generate_domain_context(proj_dir, work_dir, script_dir, resume and not phases_modified,
-                                 plugin_stage=context_stage, plugin_root=plugin_root)
+                                 plugin_stage=context_stage, plugin_root=plugin_root,
+                                 plugin_config=plugin_config)
 
     if not _setup_outputs_complete(work_dir):
         print(

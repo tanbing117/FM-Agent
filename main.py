@@ -238,6 +238,7 @@ def run_pipeline(
         proj_dir, work_dir, script_dir, resume=resume,
         submodules=submodules,
         plugin_stage=phase_stage, plugin_root=plugin_root,
+        plugin_config=plugin_config,
     )
 
     phases_modified = _post_process_phases(
@@ -249,7 +250,8 @@ def run_pipeline(
 
     print("[Pipeline] Stage 2/6: Generating domain context...")
     _run_generate_domain_context(proj_dir, work_dir, script_dir, resume=resume and not phases_modified,
-                                 plugin_stage=context_stage, plugin_root=plugin_root)
+                                 plugin_stage=context_stage, plugin_root=plugin_root,
+                                 plugin_config=plugin_config)
 
     # Build (or rebuild) the codegraph index if codegraph is installed. Both
     # run_extraction (Stage 3) and generate_topdown_layers (Stage 5) read from it.
